@@ -1,4 +1,19 @@
 import os
+
+print("BOOTING APP ✅", flush=True)
+
+REQUIRED = [
+    "GOOGLE_SHEETS_ID",
+    "GOOGLE_SERVICE_ACCOUNT_JSON",
+    "AIRTABLE_TOKEN",
+    "AIRTABLE_BASE_ID",
+    "AIRTABLE_TABLE_NAME",
+]
+missing = [k for k in REQUIRED if not os.environ.get(k)]
+if missing:
+    raise RuntimeError(f"Missing env vars: {missing}")
+    
+import os
 import json
 import time
 import re
