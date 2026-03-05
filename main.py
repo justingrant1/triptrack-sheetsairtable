@@ -11,71 +11,64 @@ import requests
 from fastapi import FastAPI
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from dotenv import load_dotenv
 
-# ==========================================================
-# BOOT LOGS (must show up instantly if Python starts)
-# ==========================================================
-print("BOOT 1 ✅ main.py imported", flush=True)
+# Load local .env first (Railway Variables still override)
+load_dotenv()
 
-# ==========================================================
-# ENV CONFIG (Railway env vars only — no dotenv)
-# ==========================================================
-REQUIRED = [
-    "GOOGLE_SHEETS_ID",
-    "GOOGLE_SERVICE_ACCOUNT_JSON",
-    "AIRTABLE_TOKEN",
-    "AIRTABLE_BASE_ID",
-    "AIRTABLE_TABLE_NAME",
-]
+print("BOOTING APP ✅", flush=True)
 
-missing = [k for k in REQUIRED if not os.environ.get(k)]
-if missing:
-    raise RuntimeError(f"Missing env vars: {missing}")
+# ----------------------
+# ENV CONFIG
+# ----------------------
+GOOGLE_SHEETS_ID = os.getenv("GOOGLE_SHEETS_ID")                 # required
+GOOGLE_SHEET_TAB = os.getenv("GOOGLE_SHEET_TAB", "Sheet1")
+GOOGLE_SHEET_RANGE = os.getenv("GOOGLE_SHEET_RANGE", "A:B")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")  # required
 
-GOOGLE_SHEETS_ID = os.environ["GOOGLE_SHEETS_ID"]
-GOOGLE_SHEET_TAB = os.environ.get("GOOGLE_SHEET_TAB", "Sheet1")
-GOOGLE_SHEET_RANGE = os.environ.get("GOOGLE_SHEET_RANGE", "A:B")  # only A+B
-GOOGLE_SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+# Accept either name (people often use AIRTABLE_API_KEY)
+AIRTABLE_TOKEN = os.getenv("AIRTABLE_TOKEN") or os.getenv("AIRTABLE_API_KEY")  # required
+AIRTABLE_BASE_ID = os.getenv("AIRTABLE_BASE_ID")               # required
+AIRTABLE_TABLE_NAME = os.getenv("AIRTABLE_TABLE_NAME")         # required
 
-AIRTABLE_TOKEN = os.environ["AIRTABLE_TOKEN"]
-AIRTABLE_BASE_ID = os.environ["AIRTABLE_BASE_ID"]
-AIRTABLE_TABLE_NAME = os.environ["AIRTABLE_TABLE_NAME"]
+POLL_SECONDS = int(os.getenv("POLL_SECONDS", "60"))
 
-POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "60"))
+# Airtable field names (override via env if needed)
+FIELD_STATUS = os.getenv("FIELD_STATUS", "Status")
+FIELD_CREATOR_NAME = os.getenv("FIELD_CREATOR_NAME", "Creator / Contact Name")
+FIELD_TIER = os.getenv("FIELD_TIER", "Tier")
+FIELD_EMAIL = os.getenv("FIELD_EMAIL", "Email")
+FIELD_PAYOUT_MONTHLY = os.getenv("FIELD_PAYOUT_MONTHLY", "payout_monthly")
+FIELD_PAYOUT_ANNUAL = os.getenv("FIELD_PAYOUT_ANNUAL", "payout_annual")
+FIELD_LINK_NAME = os.getenv("FIELD_LINK_NAME", "link_name")
 
-# Airtable field names (override via env if your base differs)
-FIELD_STATUS = os.environ.get("FIELD_STATUS", "Status")
-FIELD_CREATOR_NAME = os.environ.get("FIELD_CREATOR_NAME", "Creator / Contact Name")
-FIELD_TIER = os.environ.get("FIELD_TIER", "Tier")
-FIELD_EMAIL = os.environ.get("FIELD_EMAIL", "Email")
-FIELD_PAYOUT_MONTHLY = os.environ.get("FIELD_PAYOUT_MONTHLY", "payout_monthly")
-FIELD_PAYOUT_ANNUAL = os.environ.get("FIELD_PAYOUT_ANNUAL", "payout_annual")
-FIELD_LINK_NAME = os.environ.get("FIELD_LINK_NAME", "link_name")
-
-DEFAULT_STATUS = "Signed - Onboarding"
-DEFAULT_TIER = "Affiliate"
-DEFAULT_PAYOUT_MONTHLY = 3.6
-DEFAULT_PAYOUT_ANNUAL = 30.0
+DEFAULT_STATUS = os.getenv("DEFAULT_STATUS", "Signed - Onboarding")
+DEFAULT_TIER = os.getenv("DEFAULT_TIER", "Affiliate")
+DEFAULT_PAYOUT_MONTHLY = float(os.getenv("DEFAULT_PAYOUT_MONTHLY", "3.6"))
+DEFAULT_PAYOUT_ANNUAL = float(os.getenv("DEFAULT_PAYOUT_ANNUAL", "30.0"))
 
 AIRTABLE_API_BASE = "https://api.airtable.com/v0"
 
+# Validate required env vars (but print clearly first)
+REQUIRED = [
+    ("GOOGLE_SHEETS_ID", GOOGLE_SHEETS_ID),
+    ("GOOGLE_SERVICE_ACCOUNT_JSON", GOOGLE_SERVICE_ACCOUNT_JSON),
+    ("AIRTABLE_TOKEN (or AIRTABLE_API_KEY)", AIRTABLE_TOKEN),
+    ("AIRTABLE_BASE_ID", AIRTABLE_BASE_ID),
+    ("AIRTABLE_TABLE_NAME", AIRTABLE_TABLE_NAME),
+]
+missing = [name for name, val in REQUIRED if not val]
+if missing:
+    print(f"❌ Missing env vars: {missing}", flush=True)
+    raise RuntimeError(f"Missing env vars: {missing}")
+
+print("✅ Env vars look present.", flush=True)
+
 app = FastAPI()
 
-print("BOOT 2 ✅ env loaded, app created", flush=True)
-
-# ==========================================================
-# HEALTH ENDPOINT (never touches Google/Airtable)
-# ==========================================================
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-# ==========================================================
+# ----------------------
 # HELPERS
-# ==========================================================
-def log(msg: str):
-    print(msg, flush=True)
-
+# ----------------------
 def _normalize_letters_only(value: str) -> str:
     """
     link_name rules:
@@ -86,12 +79,14 @@ def _normalize_letters_only(value: str) -> str:
     """
     if not value:
         return ""
+
     value = unicodedata.normalize("NFKD", value)
     value = "".join([c for c in value if not unicodedata.combining(c)])
     value = value.lower()
     value = re.sub(r"\d+", "", value)
     value = re.sub(r"[^a-z]", "", value)
     return value
+
 
 def make_link_name(creator_name: str, email: str) -> str:
     base = _normalize_letters_only(creator_name)
@@ -102,39 +97,20 @@ def make_link_name(creator_name: str, email: str) -> str:
         base = "creator"
     return base[:24]
 
-def airtable_headers() -> Dict[str, str]:
-    return {
-        "Authorization": f"Bearer {AIRTABLE_TOKEN}",
-        "Content-Type": "application/json",
-    }
-
-# ==========================================================
-# GOOGLE SHEETS (build client ONLY when needed)
-# ==========================================================
-_sheets_service = None
-_sheets_lock = threading.Lock()
 
 def sheets_client():
-    """
-    Build Sheets service lazily so startup never hangs on Google init.
-    """
-    global _sheets_service
-    if _sheets_service is not None:
-        return _sheets_service
-
-    with _sheets_lock:
-        if _sheets_service is not None:
-            return _sheets_service
-
-        log("GOOGLE ✅ building sheets client...")
+    try:
         sa_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
-        creds = service_account.Credentials.from_service_account_info(
-            sa_info,
-            scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
-        )
-        _sheets_service = build("sheets", "v4", credentials=creds, cache_discovery=False)
-        log("GOOGLE ✅ sheets client ready")
-        return _sheets_service
+    except Exception as e:
+        print("❌ GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON.", flush=True)
+        raise
+
+    creds = service_account.Credentials.from_service_account_info(
+        sa_info,
+        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+    )
+    return build("sheets", "v4", credentials=creds, cache_discovery=False)
+
 
 def read_sheet_rows() -> List[Tuple[str, str]]:
     """
@@ -143,16 +119,11 @@ def read_sheet_rows() -> List[Tuple[str, str]]:
     """
     service = sheets_client()
     range_ = f"{GOOGLE_SHEET_TAB}!{GOOGLE_SHEET_RANGE}"
-    resp = (
-        service.spreadsheets()
-        .values()
-        .get(
-            spreadsheetId=GOOGLE_SHEETS_ID,
-            range=range_,
-            majorDimension="ROWS",
-        )
-        .execute()
-    )
+    resp = service.spreadsheets().values().get(
+        spreadsheetId=GOOGLE_SHEETS_ID,
+        range=range_,
+        majorDimension="ROWS",
+    ).execute()
 
     values = resp.get("values", [])
     rows: List[Tuple[str, str]] = []
@@ -164,7 +135,6 @@ def read_sheet_rows() -> List[Tuple[str, str]]:
         if not email and not name:
             continue
 
-        # header skip
         if i == 0 and ("email" in email.lower() or "confirm" in email.lower()):
             continue
 
@@ -175,28 +145,33 @@ def read_sheet_rows() -> List[Tuple[str, str]]:
 
     return rows
 
-# ==========================================================
-# AIRTABLE
-# ==========================================================
-def airtable_table_url() -> str:
+
+def airtable_headers() -> Dict[str, str]:
+    return {
+        "Authorization": f"Bearer {AIRTABLE_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+
+def _airtable_url() -> str:
     return f"{AIRTABLE_API_BASE}/{AIRTABLE_BASE_ID}/{requests.utils.quote(AIRTABLE_TABLE_NAME)}"
 
+
 def airtable_find_by_email(email: str) -> Optional[Dict]:
-    url = airtable_table_url()
     params = {"filterByFormula": f'{{{FIELD_EMAIL}}}="{email}"', "maxRecords": 1}
-    r = requests.get(url, headers=airtable_headers(), params=params, timeout=30)
+    r = requests.get(_airtable_url(), headers=airtable_headers(), params=params, timeout=30)
     r.raise_for_status()
     data = r.json()
     records = data.get("records", [])
     return records[0] if records else None
 
+
 def airtable_link_name_exists(link_name: str) -> bool:
-    url = airtable_table_url()
     params = {"filterByFormula": f'{{{FIELD_LINK_NAME}}}="{link_name}"', "maxRecords": 1}
-    r = requests.get(url, headers=airtable_headers(), params=params, timeout=30)
+    r = requests.get(_airtable_url(), headers=airtable_headers(), params=params, timeout=30)
     r.raise_for_status()
-    data = r.json()
-    return len(data.get("records", [])) > 0
+    return len(r.json().get("records", [])) > 0
+
 
 def make_unique_link_name(creator_name: str, email: str) -> str:
     base = make_link_name(creator_name, email)
@@ -221,8 +196,8 @@ def make_unique_link_name(creator_name: str, email: str) -> str:
 
     return (base + "xxx")[:24]
 
+
 def airtable_create_record(email: str, creator_name: str) -> Dict:
-    url = airtable_table_url()
     link_name = make_unique_link_name(creator_name, email)
 
     fields = {
@@ -236,14 +211,16 @@ def airtable_create_record(email: str, creator_name: str) -> Dict:
     }
 
     payload = {"fields": fields}
-    r = requests.post(url, headers=airtable_headers(), json=payload, timeout=30)
+    r = requests.post(_airtable_url(), headers=airtable_headers(), json=payload, timeout=30)
     r.raise_for_status()
     return r.json()
 
-# ==========================================================
+
+# ----------------------
 # WORKER LOOP
-# ==========================================================
+# ----------------------
 _last_run = {"ts": None, "added": 0, "skipped": 0, "errors": 0, "last_error": None}
+
 
 def sync_once():
     added = 0
@@ -252,15 +229,12 @@ def sync_once():
     last_error = None
 
     try:
-        log("SYNC ▶ reading sheet rows...")
         rows = read_sheet_rows()
-        log(f"SYNC ▶ got {len(rows)} rows")
     except Exception as e:
-        errors = 1
         last_error = f"read_sheet_rows failed: {e}"
-        log("SYNC ❌ read_sheet_rows exception:")
-        log(traceback.format_exc())
-        _last_run.update({"ts": int(time.time()), "added": 0, "skipped": 0, "errors": errors, "last_error": last_error})
+        print("❌ " + last_error, flush=True)
+        print(traceback.format_exc(), flush=True)
+        _last_run.update({"ts": int(time.time()), "added": 0, "skipped": 0, "errors": 1, "last_error": last_error})
         return
 
     for email, name in rows:
@@ -272,33 +246,39 @@ def sync_once():
 
             airtable_create_record(email=email, creator_name=name)
             added += 1
-            log(f"SYNC ✅ added {email} ({name})")
         except Exception as e:
             errors += 1
             last_error = f"{email}: {e}"
-            log(f"SYNC ❌ error for {email}:")
-            log(traceback.format_exc())
+            print("❌ Airtable op failed for " + email, flush=True)
+            print(traceback.format_exc(), flush=True)
 
     _last_run.update(
         {"ts": int(time.time()), "added": added, "skipped": skipped, "errors": errors, "last_error": last_error}
     )
-    log(f"SYNC ✔ done. added={added} skipped={skipped} errors={errors}")
+
 
 def worker_loop():
-    log(f"WORKER ✅ started. poll={POLL_SECONDS}s")
+    print(f"✅ Worker started. Poll every {POLL_SECONDS}s", flush=True)
     while True:
         sync_once()
         time.sleep(POLL_SECONDS)
 
+
 @app.on_event("startup")
 def on_startup():
-    log("BOOT 3 ✅ startup event fired; starting worker thread")
+    # Start background sync worker
     t = threading.Thread(target=worker_loop, daemon=True)
     t.start()
 
-# ==========================================================
+
+# ----------------------
 # ROUTES
-# ==========================================================
+# ----------------------
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+
 @app.get("/")
 def root():
     return {
@@ -308,6 +288,7 @@ def root():
         "poll_seconds": POLL_SECONDS,
         "last_run": _last_run,
     }
+
 
 @app.post("/sync-now")
 def sync_now():
