@@ -11,6 +11,13 @@ from fastapi import FastAPI
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY")
+
 # ======================
 # ENV CONFIG
 # ======================
